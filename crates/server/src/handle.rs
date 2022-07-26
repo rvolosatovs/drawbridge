@@ -3,7 +3,9 @@
 
 use super::{repos, tags, trees, users};
 
-use drawbridge_type::{RepositoryName, TagName, TreePath, UserName};
+use drawbridge_type::{RepositoryName, TagName, TreeName, TreePath, UserName};
+
+use std::str::FromStr;
 
 use axum::body::Body;
 use axum::handler::Handler;
@@ -28,7 +30,7 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
     }
 
     trace!(target: "app::handle", "begin HTTP request handling {:?}", req);
-    let path = req.uri().path().trim_start_matches('/');
+    let path = req.uri().path().trim_matches('/');
     let (ver, path) = path
         .strip_prefix("api")
         .ok_or_else(|| not_found(path))?
@@ -53,15 +55,15 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
         .trim_start_matches('/')
         .split_once("/_")
         .map(|(left, right)| (left.trim_end_matches('/').to_string(), format!("_{right}")))
-        .unwrap_or((path.trim_end_matches('/').to_string(), "".into()));
+        .unwrap_or((path.to_string(), "".to_string()));
     if head.is_empty() {
         return Err(not_found(path));
     }
 
     let extensions = req.extensions_mut();
 
-    let (user, head) = head.split_once('/').unwrap_or((&head.trim_start_matches('/'), ""));
-    let user = user.trim_end_matches('/').parse::<UserName>().map_err(|e| {
+    let (user, head) = head.split_once('/').unwrap_or((&head, ""));
+    let user = user.parse::<UserName>().map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("Failed to parse user name: {e}"),
@@ -69,6 +71,7 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
     })?;
     trace!(target: "app::handle", "parsed user name: `{user}`");
     assert_eq!(extensions.insert(user), None, "duplicate user name");
+    let head = head.trim_start_matches('/');
     if head.is_empty() {
         return match *req.method() {
             Method::HEAD => Ok(users::head.into_service().call(req).await.into_response()),
@@ -81,7 +84,7 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
         };
     }
 
-    let repo = head.trim_end_matches('/').parse::<RepositoryName>().map_err(|e| {
+    let repo = head.parse::<RepositoryName>().map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("Failed to parse repository name: {e}"),
@@ -90,9 +93,7 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
     trace!(target: "app::handle", "parsed repository name: `{repo}`");
     assert_eq!(extensions.insert(repo), None, "duplicate repository name");
 
-    //let mut tail = tail.splitn(4, '/');
     let mut tail = tail.split('/').filter(|x| !x.is_empty());
-
     match (tail.next(), tail.next(), tail.next()) {
         (None | Some(""), None, None) => match *req.method() {
             Method::HEAD => Ok(repos::head.into_service().call(req).await.into_response()),
@@ -111,11 +112,7 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
             )),
         },
         (Some("_tag"), Some(tag), prop @ (None | Some("tree"))) => {
-            let tag = tag
-                .trim_start_matches('/')
-                .trim_end_matches('/')
-                .parse::<TagName>()
-                .map_err(|e| {
+            let tag = tag.parse::<TagName>().map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
                     format!("Failed to parse tag name: {e}"),
@@ -137,17 +134,14 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
             }
 
             let path = tail
-                .next()
-                .unwrap_or("")
-                .trim_start_matches('/')
-                .trim_end_matches('/')
-                .parse::<TreePath>()
+                .map(TreeName::from_str)
+                .collect::<Result<TreePath, _>>()
                 .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Failed to parse tree path: {e}"),
-                )
-            })?;
+                    (
+                        StatusCode::BAD_REQUEST,
+                        format!("Failed to parse tree path: {e}"),
+                    )
+                })?;
             trace!(target: "app::handle", "parsed tree path: `{path}`");
             assert_eq!(extensions.insert(path), None, "duplicate tree path");
             match *req.method() {
