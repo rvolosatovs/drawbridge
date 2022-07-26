@@ -52,16 +52,16 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
     let (head, tail) = path
         .trim_start_matches('/')
         .split_once("/_")
-        .map(|(left, right)| (left.to_string(), format!("_{right}")))
-        .unwrap_or((path.to_string(), "".into()));
+        .map(|(left, right)| (left.trim_end_matches('/').to_string(), format!("_{right}")))
+        .unwrap_or((path.trim_end_matches('/').to_string(), "".into()));
     if head.is_empty() {
         return Err(not_found(path));
     }
 
     let extensions = req.extensions_mut();
 
-    let (user, head) = head.split_once('/').unwrap_or((&head, ""));
-    let user = user.parse::<UserName>().map_err(|e| {
+    let (user, head) = head.split_once('/').unwrap_or((&head.trim_start_matches('/'), ""));
+    let user = user.trim_end_matches('/').parse::<UserName>().map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("Failed to parse user name: {e}"),
@@ -81,7 +81,7 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
         };
     }
 
-    let repo = head.parse::<RepositoryName>().map_err(|e| {
+    let repo = head.trim_end_matches('/').parse::<RepositoryName>().map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("Failed to parse repository name: {e}"),
@@ -90,7 +90,9 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
     trace!(target: "app::handle", "parsed repository name: `{repo}`");
     assert_eq!(extensions.insert(repo), None, "duplicate repository name");
 
-    let mut tail = tail.splitn(4, '/');
+    //let mut tail = tail.splitn(4, '/');
+    let mut tail = tail.split('/').filter(|x| !x.is_empty());
+
     match (tail.next(), tail.next(), tail.next()) {
         (None | Some(""), None, None) => match *req.method() {
             Method::HEAD => Ok(repos::head.into_service().call(req).await.into_response()),
@@ -109,7 +111,11 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
             )),
         },
         (Some("_tag"), Some(tag), prop @ (None | Some("tree"))) => {
-            let tag = tag.parse::<TagName>().map_err(|e| {
+            let tag = tag
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .parse::<TagName>()
+                .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
                     format!("Failed to parse tag name: {e}"),
@@ -130,7 +136,13 @@ pub async fn handle(mut req: Request<Body>) -> impl IntoResponse {
                 };
             }
 
-            let path = tail.next().unwrap_or("").parse::<TreePath>().map_err(|e| {
+            let path = tail
+                .next()
+                .unwrap_or("")
+                .trim_start_matches('/')
+                .trim_end_matches('/')
+                .parse::<TreePath>()
+                .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
                     format!("Failed to parse tree path: {e}"),
